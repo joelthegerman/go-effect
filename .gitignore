@@ -1,0 +1,12 @@
+# Compiled binaries
+/agentic-sandbox
+/server
+*.exe
+
+# Runtime artifacts
+audit.log
+
+# Test/coverage output
+*.out
+coverage.*
+/main
