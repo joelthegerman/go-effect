@@ -1,0 +1,14 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "Sandbox Postgres",
+      "Group": "Servers",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "sandbox",
+      "Username": "postgres",
+      "PassFile": "/pgpass",
+      "SSLMode": "prefer"
+    }
+  }
+}

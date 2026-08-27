@@ -35,10 +35,3 @@ func TestCoreIsPure(t *testing.T) {
 		}
 	}
 }
-
-func TestSignupPlansEffects(t *testing.T) {
-	effects, err := Signup("ada@example.com")
-	if err != nil || len(effects) != 2 {
-		t.Fatalf("Signup = %v, %v; want 2 effects", effects, err)
-	}
-}

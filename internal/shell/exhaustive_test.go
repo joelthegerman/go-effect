@@ -56,30 +56,39 @@ func handledInRun(t *testing.T) map[string]bool {
 	t.Helper()
 	out := map[string]bool{}
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "shell.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ast.Inspect(file, func(n ast.Node) bool {
-		sw, ok := n.(*ast.TypeSwitchStmt)
-		if !ok {
-			return true
+
+	// Scan every non-test file in this package for a type switch on core.*
+	// effects, so it doesn't matter which file Run lives in.
+	files, _ := filepath.Glob("*.go")
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
 		}
-		for _, stmt := range sw.Body.List {
-			cc, ok := stmt.(*ast.CaseClause)
+		file, err := parser.ParseFile(fset, f, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			sw, ok := n.(*ast.TypeSwitchStmt)
 			if !ok {
-				continue
+				return true
 			}
-			for _, expr := range cc.List {
-				if sel, ok := expr.(*ast.SelectorExpr); ok {
-					if id, ok := sel.X.(*ast.Ident); ok && id.Name == "core" {
-						out[sel.Sel.Name] = true
+			for _, stmt := range sw.Body.List {
+				cc, ok := stmt.(*ast.CaseClause)
+				if !ok {
+					continue
+				}
+				for _, expr := range cc.List {
+					if sel, ok := expr.(*ast.SelectorExpr); ok {
+						if id, ok := sel.X.(*ast.Ident); ok && id.Name == "core" {
+							out[sel.Sel.Name] = true
+						}
 					}
 				}
 			}
-		}
-		return true
-	})
+			return true
+		})
+	}
 	return out
 }
 

@@ -10,3 +10,8 @@ audit.log
 *.out
 coverage.*
 /main
+
+# Sandbox database — pgAdmin may write back into the mounted config dir
+db/pgadmin/storage/
+db/pgadmin/sessions/
+db/pgadmin/pgadmin4.db

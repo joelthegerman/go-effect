@@ -1,42 +1,93 @@
-// The app: an HTTP signup service. This file is wiring only — it holds no
-// logic. Flow: plan (core) -> gate (core) -> run (shell).
+// Command server is the Todos HTTP service. This file is wiring only — it holds
+// no business logic. Startup: load config -> connect Postgres -> migrate ->
+// serve, with graceful shutdown on SIGINT/SIGTERM.
 package main
 
 import (
-	"fmt"
+	"context"
+	"errors"
+	"flag"
+	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 
-	"agentic-sandbox/internal/core"
+	"agentic-sandbox/internal/api"
+	"agentic-sandbox/internal/config"
 	"agentic-sandbox/internal/shell"
 )
 
 func main() {
-	http.HandleFunc("POST /signup", func(w http.ResponseWriter, r *http.Request) {
-		email := r.URL.Query().Get("email")
+	migrateOnly := flag.Bool("migrate", false, "run database migrations and exit")
+	flag.Parse()
 
-		effects, err := core.Signup(email) // 1. PLAN  (pure)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-			return
-		}
-		vetted, err := shell.Gate(effects) // 2. GATE  — required to get a Vetted
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusForbidden)
-			return
-		}
-		shell.Run(vetted) // 3. RUN   — only accepts Vetted; can't skip the gate
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	slog.SetDefault(logger)
 
-		_, _ = fmt.Fprintf(w, "ok: %d effects\n", len(effects))
-	})
-
-	addr := ":8080"
-	if p := os.Getenv("PORT"); p != "" {
-		addr = ":" + p
-	}
-	fmt.Println("listening on", addr)
-	if err := http.ListenAndServe(addr, nil); err != nil {
-		fmt.Fprintln(os.Stderr, "server stopped:", err)
+	if err := run(logger, *migrateOnly); err != nil {
+		logger.Error("fatal", slog.Any("err", err))
 		os.Exit(1)
 	}
+}
+
+func run(logger *slog.Logger, migrateOnly bool) error {
+	cfg := config.Load()
+
+	// Signals cancel this context, which drives graceful shutdown.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := shell.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	logger.Info("connected to database")
+
+	if err := shell.Migrate(ctx, pool); err != nil {
+		return err
+	}
+	logger.Info("migrations applied")
+
+	if migrateOnly {
+		return nil
+	}
+
+	repo := shell.NewRepo(pool)
+	server := api.NewServer(repo, logger)
+
+	httpServer := &http.Server{
+		Addr:         cfg.Addr,
+		Handler:      server.Handler(),
+		ReadTimeout:  cfg.ReadTimeout,
+		WriteTimeout: cfg.WriteTimeout,
+		IdleTimeout:  cfg.IdleTimeout,
+	}
+
+	// Serve in the background; a serve error cancels the wait below.
+	serveErr := make(chan error, 1)
+	go func() {
+		logger.Info("listening", slog.String("addr", cfg.Addr))
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- err
+			return
+		}
+		serveErr <- nil
+	}()
+
+	select {
+	case err := <-serveErr:
+		return err
+	case <-ctx.Done():
+		logger.Info("shutdown signal received")
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	defer cancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		return err
+	}
+	logger.Info("stopped cleanly")
+	return nil
 }

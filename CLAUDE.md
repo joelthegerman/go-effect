@@ -24,20 +24,30 @@ code that may.
 
 ## The flow
 
-`cmd/server` wires three steps and holds no logic itself:
+The app is a **Todos API**. `internal/api` handlers wire three steps per write
+and hold no business logic themselves:
 
-1. **plan** — `core.Signup` returns `[]Effect` (pure).
+1. **plan** — a `core` function (`Create`, `Update`, `Delete`) returns
+   `[]Effect` (pure).
 2. **gate** — `shell.Gate` runs every policy and returns a `Vetted` token, or
    refuses. Nothing has run yet.
-3. **run** — `shell.Run` performs the effects. It accepts only a `Vetted`, so
-   the gate cannot be skipped.
+3. **run** — `shell.Run` performs the effects (writing through the Postgres
+   repository). It accepts only a `Vetted`, so the gate cannot be skipped.
+
+**Reads** (get / list) are I/O, so they live in the shell's repository and are
+handed *into* pure core as data (e.g. `core.Update(current, patch)`). Core never
+reads the world.
 
 ## Where things go
 
 - `internal/core/` — pure business logic. **You write here.** Never import
   `os`, `net`, `net/http`, `database/sql`, `syscall`, `log`, etc.
-- `internal/shell/` — performs effects and owns the gate. Trusted, audited.
-- `cmd/server/` — wiring only.
+- `internal/shell/` — performs effects, owns the gate, the Postgres repository,
+  and the embedded migrations. Trusted, audited.
+- `internal/api/` — HTTP handlers, routing, JSON, middleware. Translates HTTP
+  into the plan→gate→run flow; holds no business logic.
+- `internal/config/` — env-driven configuration.
+- `cmd/server/` — wiring only (connect, migrate, serve, graceful shutdown).
 
 ## Where policies go (validation vs. guardrails)
 
@@ -49,13 +59,14 @@ imposed on the code?*
   quotas) → **`shell`**, so untrusted core can't weaken or bypass them.
 
 Add a guardrail by adding a small `Policy` func to the `policies` slice in
-`internal/shell/shell.go`. Do not grow it into a switch.
+`internal/shell/gate.go`. Do not grow it into a switch.
 
 ## Adding a new effect
 
 1. Add a struct in `internal/core/effect.go` with an `isEffect()` method.
 2. Return it from a core function.
-3. Handle it in `internal/shell/shell.go`'s `Run` switch.
+3. Handle it in `internal/shell/run.go`'s `Run` switch (adding a repository
+   method if it's a new kind of write).
 
 `TestRunHandlesEveryEffect` fails the build if you skip step 3.
 

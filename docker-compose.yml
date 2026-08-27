@@ -1,0 +1,50 @@
+# Postgres + pgAdmin for the Todos API. The app persists todos in this database
+# through a repository that sits BEHIND the effect gate (writes are StoreTodo/
+# DeleteTodo effects executed by shell.Run; reads go through the repo). The app's
+# schema is created by migrations in internal/shell/migrations — NOT by
+# db/init.sql, which only seeds a throwaway `users` demo table for pgAdmin.
+# See README and docs/adr/0002-todos-persisted-through-a-repository.md.
+#
+# All credentials below are hardcoded DEV-ONLY values. Do not reuse anywhere real.
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres      # dev only
+      POSTGRES_DB: sandbox
+    ports:
+      - "5432:5432"
+    volumes:
+      - sandbox-pgdata:/var/lib/postgresql/data
+      # Auto-run once on first boot of an empty data dir. Seeds a throwaway demo
+      # table so pgAdmin has something to show. NOT the app's schema.
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sandbox"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4:8
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com   # dev only
+      PGADMIN_DEFAULT_PASSWORD: admin            # dev only
+      PGADMIN_CONFIG_SERVER_MODE: "False"        # skip per-user login setup for a local sandbox
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+    ports:
+      - "8081:80"                                # 8080 is left free for the Go app
+    volumes:
+      - sandbox-pgadmin:/var/lib/pgadmin
+      # Pre-register the postgres server so it appears in the tree on first load.
+      - ./db/pgadmin/servers.json:/pgadmin4/servers.json:ro
+      - ./db/pgadmin/pgpass:/pgpass:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  sandbox-pgdata:
+  sandbox-pgadmin:
