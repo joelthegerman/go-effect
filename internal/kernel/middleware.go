@@ -1,17 +1,24 @@
-package api
+package kernel
 
 import (
 	"context"
 	"log/slog"
 	"net/http"
 	"time"
-
-	"agentic-sandbox/internal/shell"
 )
 
 type ctxKey int
 
 const requestIDKey ctxKey = iota
+
+// Middleware wraps a handler with the standard chain: panic recovery, a request
+// id, and one structured access-log line per request. Feature routers mount
+// their routes on a mux and hand it here.
+func Middleware(logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return recoverer(logger)(requestID(requestLogger(logger)(next)))
+	}
+}
 
 // requestID attaches a unique id to every request (reusing an inbound
 // X-Request-ID if present) and echoes it back in the response header.
@@ -19,7 +26,7 @@ func requestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-ID")
 		if id == "" {
-			id = shell.NewID()
+			id = NewID()
 		}
 		w.Header().Set("X-Request-ID", id)
 		ctx := context.WithValue(r.Context(), requestIDKey, id)
@@ -64,7 +71,7 @@ func recoverer(logger *slog.Logger) func(http.Handler) http.Handler {
 			defer func() {
 				if rec := recover(); rec != nil {
 					logger.ErrorContext(r.Context(), "panic recovered", slog.Any("panic", rec))
-					writeError(w, http.StatusInternalServerError, "internal", "internal server error")
+					WriteError(w, http.StatusInternalServerError, "internal", "internal server error")
 				}
 			}()
 			next.ServeHTTP(w, r)

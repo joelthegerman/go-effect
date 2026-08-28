@@ -1,4 +1,4 @@
-package shell
+package kernel
 
 import (
 	"go/ast"
@@ -10,21 +10,21 @@ import (
 )
 
 // TestRunHandlesEveryEffect fails if package core defines an Effect that
-// shell.Run's type switch does not handle (or handles a case for an effect
+// kernel.Run's type switch does not handle (or handles a case for an effect
 // that no longer exists). This makes the executor's switch exhaustive by
 // construction: you cannot add an effect and silently forget to wire it up.
 func TestRunHandlesEveryEffect(t *testing.T) {
 	effects := effectTypes(t)  // every type in core with an isEffect() method
-	handled := handledInRun(t) // every `case core.X:` in shell.go
+	handled := handledInRun(t) // every `case core.X:` in kernel's Run switch
 
 	for name := range effects {
 		if !handled[name] {
-			t.Errorf("core.%s has no case in shell.Run — add one", name)
+			t.Errorf("core.%s has no case in kernel.Run — add one", name)
 		}
 	}
 	for name := range handled {
 		if !effects[name] {
-			t.Errorf("shell.Run handles core.%s but no such effect exists", name)
+			t.Errorf("kernel.Run handles core.%s but no such effect exists", name)
 		}
 	}
 }

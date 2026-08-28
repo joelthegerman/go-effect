@@ -1,4 +1,4 @@
-package shell
+package todos
 
 import (
 	"context"
@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"agentic-sandbox/internal/core"
+	todo "agentic-sandbox/internal/core/todos"
+	"agentic-sandbox/internal/kernel"
 )
 
 // testRepo connects to the database named by TEST_DATABASE_URL (falling back to
@@ -28,13 +30,13 @@ func testRepo(t *testing.T) *Repo {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	pool, err := Connect(ctx, dsn)
+	pool, err := kernel.Connect(ctx, dsn)
 	if err != nil {
 		t.Skipf("no database reachable (%v); skipping integration test", err)
 	}
 	t.Cleanup(pool.Close)
 
-	if err := Migrate(ctx, pool); err != nil {
+	if err := kernel.Migrate(ctx, pool, Migrations()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	return NewRepo(pool)
@@ -43,14 +45,15 @@ func testRepo(t *testing.T) *Repo {
 var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // gateRun gates and executes a batch of effects, failing the test on error.
-// It's the test-side equivalent of an API write handler's tail.
+// It's the test-side equivalent of an API write handler's tail, and it runs the
+// real todos guardrails via Policies().
 func gateRun(t *testing.T, r *Repo, effects []core.Effect) {
 	t.Helper()
-	vetted, err := Gate(effects)
+	vetted, err := kernel.Gate(Policies(), effects)
 	if err != nil {
 		t.Fatalf("gate: %v", err)
 	}
-	if err := Run(context.Background(), r, testLogger, vetted); err != nil {
+	if err := kernel.Run(context.Background(), r, testLogger, vetted); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 }
@@ -58,10 +61,10 @@ func gateRun(t *testing.T, r *Repo, effects []core.Effect) {
 func TestRepoLifecycle(t *testing.T) {
 	r := testRepo(t)
 	ctx := context.Background()
-	id := NewID()
+	id := kernel.NewID()
 
 	// create
-	created, err := core.Create(id, core.CreateInput{Title: "walk dog"})
+	created, err := todo.Create(id, todo.CreateInput{Title: "walk dog"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +80,7 @@ func TestRepoLifecycle(t *testing.T) {
 
 	// update (toggle done, keep title)
 	done := true
-	updated, err := core.Update(got, core.Patch{Done: &done})
+	updated, err := todo.Update(got, todo.Patch{Done: &done})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,22 +99,22 @@ func TestRepoLifecycle(t *testing.T) {
 	}
 
 	// delete
-	del, err := core.Delete(id)
+	del, err := todo.Delete(id)
 	if err != nil {
 		t.Fatal(err)
 	}
 	gateRun(t, r, del)
 
-	if _, err := r.Get(ctx, id); !errors.Is(err, ErrNotFound) {
+	if _, err := r.Get(ctx, id); !errors.Is(err, kernel.ErrNotFound) {
 		t.Fatalf("after delete, Get should be ErrNotFound, got %v", err)
 	}
 }
 
 func TestRepoDeleteMissingIsNotFound(t *testing.T) {
 	r := testRepo(t)
-	effects, _ := core.Delete(NewID())
-	vetted, _ := Gate(effects)
-	if err := Run(context.Background(), r, testLogger, vetted); !errors.Is(err, ErrNotFound) {
+	effects, _ := todo.Delete(kernel.NewID())
+	vetted, _ := kernel.Gate(Policies(), effects)
+	if err := kernel.Run(context.Background(), r, testLogger, vetted); !errors.Is(err, kernel.ErrNotFound) {
 		t.Fatalf("deleting a missing todo should be ErrNotFound, got %v", err)
 	}
 }

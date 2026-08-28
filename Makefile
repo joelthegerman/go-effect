@@ -1,7 +1,13 @@
-.PHONY: build run migrate test test-int lint check db-up db-down db-reset
+.PHONY: build run migrate test test-int lint check sqlc db-up db-down db-reset
 
 build:
 	go build ./...
+
+# Regenerate the todos query layer from internal/shell/todos/queries.sql into
+# internal/shell/todos/sqlcgen. Run after editing the SQL or the schema.
+# Requires sqlc on PATH: go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
+sqlc:
+	sqlc generate
 
 # Runs the Todos API on :8080 (override with PORT=9090 make run). Needs Postgres
 # reachable via DATABASE_URL — run `make db-up` first. Migrations run on startup.
@@ -18,7 +24,7 @@ test:
 # Integration tests hit a real database. They SKIP automatically when none is
 # reachable; `make db-up` first to actually exercise them.
 test-int:
-	go test ./internal/shell/ -run TestRepo -v
+	go test ./internal/shell/todos/ -run TestRepo -v
 
 # Enforces core purity via depguard (belt-and-suspenders; `test` already
 # guarantees it via TestCoreIsPure). Requires golangci-lint on PATH.
@@ -30,7 +36,7 @@ check: test lint
 # --- Postgres (Postgres on :5432, pgAdmin on :8081) --------------------------
 # The app now uses this database via a repository behind the effect gate (see
 # docs/adr/0002-*). The app's schema is created by migrations in
-# internal/shell/migrations; db/init.sql only seeds a throwaway pgAdmin demo.
+# internal/shell/todos/migrations; db/init.sql only seeds a pgAdmin demo.
 
 db-up:
 	docker compose up -d

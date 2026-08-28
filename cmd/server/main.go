@@ -1,6 +1,10 @@
 // Command server is the Todos HTTP service. This file is wiring only — it holds
 // no business logic. Startup: load config -> connect Postgres -> migrate ->
 // serve, with graceful shutdown on SIGINT/SIGTERM.
+//
+// It is the composition root: the one place that knows every feature, wiring
+// each feature's shell (repository, policies, migrations) and HTTP handlers to
+// the framework kernel. Adding a feature adds a block here.
 package main
 
 import (
@@ -13,9 +17,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"agentic-sandbox/internal/api"
-	"agentic-sandbox/internal/config"
-	"agentic-sandbox/internal/shell"
+	todosapi "agentic-sandbox/internal/api/todos"
+	"agentic-sandbox/internal/kernel"
+	todosstore "agentic-sandbox/internal/shell/todos"
 )
 
 func main() {
@@ -32,20 +36,21 @@ func main() {
 }
 
 func run(logger *slog.Logger, migrateOnly bool) error {
-	cfg := config.Load()
+	cfg := kernel.Load()
 
 	// Signals cancel this context, which drives graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := shell.Connect(ctx, cfg.DatabaseURL)
+	pool, err := kernel.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
 	logger.Info("connected to database")
 
-	if err := shell.Migrate(ctx, pool); err != nil {
+	// Each feature owns its migrations; the kernel just applies them.
+	if err := kernel.Migrate(ctx, pool, todosstore.Migrations()); err != nil {
 		return err
 	}
 	logger.Info("migrations applied")
@@ -54,12 +59,19 @@ func run(logger *slog.Logger, migrateOnly bool) error {
 		return nil
 	}
 
-	repo := shell.NewRepo(pool)
-	server := api.NewServer(repo, logger)
+	// --- wire the todos feature -------------------------------------------
+	todosRepo := todosstore.NewRepo(pool)
+	todosPipe := kernel.NewPipeline(todosRepo, logger, todosstore.Policies()...)
+	todosHandlers := todosapi.NewHandlers(todosRepo, todosPipe, logger)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", kernel.Health(todosRepo))
+	todosHandlers.Register(mux)
+	handler := kernel.Middleware(logger)(mux)
 
 	httpServer := &http.Server{
 		Addr:         cfg.Addr,
-		Handler:      server.Handler(),
+		Handler:      handler,
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 		IdleTimeout:  cfg.IdleTimeout,

@@ -1,0 +1,28 @@
+# sqlc generates the todos feature's query layer from plain SQL. The generated
+# code lives in internal/shell/todos/sqlcgen — it is infrastructure, so it
+# belongs to the trusted shell and never leaks into core.
+#
+# Regenerate after editing internal/shell/todos/queries.sql (or the schema):
+#     make sqlc      (== sqlc generate)
+version: "2"
+sql:
+  - engine: postgresql
+    # The schema sqlc type-checks against is the app's own migration — one
+    # source of truth, so a column rename can't drift from the generated code.
+    schema: internal/shell/todos/migrations/0001_init.sql
+    queries: internal/shell/todos/queries.sql
+    gen:
+      go:
+        package: sqlcgen
+        out: internal/shell/todos/sqlcgen
+        sql_package: pgx/v5
+        emit_empty_slices: true     # ListTodos returns []Todo{}, never nil
+        emit_pointers_for_null_types: true # nullable done filter -> *bool
+        overrides:
+          # core.Todo carries id/timestamps as plain string/time.Time, and pgx
+          # already round-trips them that way. Overriding here keeps repo.go a
+          # thin mapping instead of unwrapping pgtype values.
+          - db_type: uuid
+            go_type: string
+          - db_type: timestamptz
+            go_type: time.Time

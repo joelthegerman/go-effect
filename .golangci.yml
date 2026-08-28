@@ -1,5 +1,6 @@
 # golangci-lint v2 config. The depguard rule enforces core purity in CI,
-# mirroring internal/core/purity_test.go (which enforces it under `go test`).
+# mirroring internal/core/core_test.go (which enforces it under `go test`). The
+# files glob covers internal/core and every feature slice under it (core/todos, …).
 version: "2"
 
 linters:
@@ -28,4 +29,8 @@ linters:
             - pkg: "log"
               desc: "core must be pure — return a WriteAuditLog effect instead"
             - pkg: "agentic-sandbox/internal/shell"
-              desc: "core must not depend on the interpreter"
+              desc: "core must not depend on infrastructure"
+            - pkg: "agentic-sandbox/internal/kernel"
+              desc: "core must not depend on the framework/executor"
+            - pkg: "agentic-sandbox/internal/api"
+              desc: "core must not depend on the HTTP layer"

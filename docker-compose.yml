@@ -1,7 +1,7 @@
 # Postgres + pgAdmin for the Todos API. The app persists todos in this database
 # through a repository that sits BEHIND the effect gate (writes are StoreTodo/
-# DeleteTodo effects executed by shell.Run; reads go through the repo). The app's
-# schema is created by migrations in internal/shell/migrations — NOT by
+# DeleteTodo effects executed by kernel.Run; reads go through the repo). The app's
+# schema is created by migrations in internal/shell/todos/migrations — NOT by
 # db/init.sql, which only seeds a throwaway `users` demo table for pgAdmin.
 # See README and docs/adr/0002-todos-persisted-through-a-repository.md.
 #

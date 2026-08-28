@@ -22,24 +22,32 @@ database fits the model without eroding it.
 
 ## Layout
 
+A small **framework kernel** plus **feature slices** (todos today, projects
+tomorrow). You develop in the feature slices; the kernel is setup you rarely
+touch.
+
 ```
-cmd/server         wiring: config -> connect -> migrate -> serve (graceful shutdown)
-internal/core      PURE. Decides what should happen; returns []Effect. No I/O.
-internal/shell     the ONLY place effects run; owns the gate, the Postgres repo,
-                   and the embedded migrations.
-internal/api       HTTP layer: routing, JSON, middleware. No business logic.
-internal/config    env-driven configuration.
+cmd/server              composition root: wires each feature to the kernel, serves
+internal/kernel         the framework: gate, executor, config, db, http middleware
+internal/core           PURE shared vocabulary: Effect + effect structs, entities
+  core/todos            PURE todos logic — decides what should happen (you develop here)
+internal/shell/todos    todos infrastructure: repo, guardrail policies, SQL + migrations
+internal/api/todos      todos HTTP: handlers + DTOs
 ```
+
+Adding `projects` means adding `core/projects`, `shell/projects`, `api/projects`
+and a wiring block in `cmd/server` — see `docs/adding-a-feature.md`.
 
 ## The flow
 
 Every write follows the same three steps:
 
 ```go
-effects, err := core.Create(id, input)   // 1. PLAN  (pure)   — returns []Effect
-vetted,  err := shell.Gate(effects)       // 2. GATE  (trusted)— returns a Vetted, or refuses
-err          := shell.Run(ctx, repo, log, // 3. RUN   (impure) — accepts only a Vetted
+effects, err := todos.Create(id, input)     // 1. PLAN  (pure)   — returns []core.Effect
+vetted,  err := kernel.Gate(policies, effects) // 2. GATE (trusted)— returns a Vetted, or refuses
+err          := kernel.Run(ctx, repo, log,   // 3. RUN   (impure) — accepts only a Vetted
                           vetted)
+// handlers use kernel.Pipeline.Apply, which bundles GATE + RUN.
 ```
 
 An effect is just data describing an intended action:
@@ -52,8 +60,8 @@ type DeleteTodo struct{ ID string }
 ```
 
 **Reads** (get / list) don't fit the write pipeline — loading a row is I/O. So
-the shell's repository reads, and hands the result *into* pure core as plain
-data (e.g. `core.Update(current, patch)`). Core stays deterministic.
+the feature's repository reads, and hands the result *into* pure core as plain
+data (e.g. `todos.Update(current, patch)`). Core stays deterministic.
 
 ## API
 
@@ -99,7 +107,7 @@ curl -s localhost:8080/todos -d '{"nope":1}'       # 400, unknown field
 | `Run` handles every effect | `TestRunHandlesEveryEffect` compares core's effect types to `Run`'s switch cases | `go test` |
 
 Try any of them: add `import "database/sql"` to a core file, or call
-`shell.Run` with a raw slice, or add an effect without a `Run` case — each fails
+`kernel.Run` with a raw slice, or add an effect without a `Run` case — each fails
 the build.
 
 ## Where policies go: validation vs. guardrails
@@ -110,15 +118,17 @@ correctness, or is it a limit imposed on the code?*
 - **Validation** the logic wants (title not empty) → **`core`**, close to the
   logic, pure and testable. Maps to `422`.
 - **Guardrails** imposed on the logic (title length cap, and — in general — no
-  prod deletes, quotas) → **trusted `shell`**, so untrusted core can't weaken or
-  bypass them. Added as a small `Policy` func in `internal/shell/gate.go`.
+  prod deletes, quotas) → the feature's **trusted `shell`**, so untrusted core
+  can't weaken or bypass them. Added as a small `kernel.Policy` func in the
+  feature's `shell/<feature>/policy.go` (`Policies()`).
 
 ## Database & migrations
 
-Postgres is now the app's real store, reached only through
-`internal/shell/repo.go`. The schema is owned by the app: migrations in
-`internal/shell/migrations/*.sql` are embedded and applied on startup (tracked
-in `schema_migrations`), idempotently.
+Postgres is the app's real store, reached only through a feature repository
+(e.g. `internal/shell/todos/repo.go`). The schema is owned by the app: each
+feature's migrations (`internal/shell/todos/migrations/*.sql`) are embedded and
+applied on startup by `kernel.Migrate` (tracked in `schema_migrations`),
+idempotently.
 
 ```sh
 make db-up      # start Postgres + pgAdmin
@@ -145,7 +155,8 @@ make check     # test + lint
 ## Adding an effect
 
 1. struct + `isEffect()` in `internal/core/effect.go`
-2. return it from a core function
-3. handle it in `internal/shell/run.go`'s `Run` switch
+2. return it from a `core/<feature>` function
+3. handle it in `internal/kernel/run.go`'s `Run` switch
 
-The exhaustiveness test reminds you if you skip step 3.
+The exhaustiveness test reminds you if you skip step 3. For adding a whole new
+feature, see `docs/adding-a-feature.md`.

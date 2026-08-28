@@ -1,4 +1,4 @@
-package api
+package todos
 
 import (
 	"context"
@@ -12,29 +12,28 @@ import (
 	"time"
 
 	"agentic-sandbox/internal/core"
-	"agentic-sandbox/internal/shell"
+	"agentic-sandbox/internal/kernel"
+	store "agentic-sandbox/internal/shell/todos"
 )
 
-// fakeStore is an in-memory Store so handler tests need no database. Writes in
-// the real system flow through shell.Run; here the test server's runner applies
-// the same effects to this map, exercising the gate for real.
+// fakeStore is an in-memory Reader + kernel.UnitOfWork so handler tests need no
+// database. Writes flow through the real kernel.Pipeline (gate + executor) into
+// this map, exercising the gate and the todos guardrails for real.
 type fakeStore struct {
 	items map[string]core.Todo
 }
 
 func newFakeStore() *fakeStore { return &fakeStore{items: map[string]core.Todo{}} }
 
-func (f *fakeStore) Ping(context.Context) error { return nil }
-
 func (f *fakeStore) Get(_ context.Context, id string) (core.Todo, error) {
 	t, ok := f.items[id]
 	if !ok {
-		return core.Todo{}, shell.ErrNotFound
+		return core.Todo{}, kernel.ErrNotFound
 	}
 	return t, nil
 }
 
-func (f *fakeStore) List(_ context.Context, p shell.ListParams) ([]core.Todo, error) {
+func (f *fakeStore) List(_ context.Context, p store.ListParams) ([]core.Todo, error) {
 	var out []core.Todo
 	for _, t := range f.items {
 		if p.Done != nil && t.Done != *p.Done {
@@ -45,8 +44,12 @@ func (f *fakeStore) List(_ context.Context, p shell.ListParams) ([]core.Todo, er
 	return out, nil
 }
 
-// fakeStore also implements shell.TodoWriter so the real shell.Run drives it,
-// exercising the gate and executor without a database.
+// WithTx makes fakeStore a kernel.UnitOfWork; there is no real transaction in
+// memory, so it just runs fn against itself.
+func (f *fakeStore) WithTx(_ context.Context, fn func(kernel.TodoWriter) error) error {
+	return fn(f)
+}
+
 func (f *fakeStore) Upsert(_ context.Context, t core.Todo) error {
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = time.Now()
@@ -58,32 +61,26 @@ func (f *fakeStore) Upsert(_ context.Context, t core.Todo) error {
 
 func (f *fakeStore) Delete(_ context.Context, id string) error {
 	if _, ok := f.items[id]; !ok {
-		return shell.ErrNotFound
+		return kernel.ErrNotFound
 	}
 	delete(f.items, id)
 	return nil
 }
 
-func applyToFake(store *fakeStore, v shell.Vetted) error {
-	return shell.Run(context.Background(), store, slog.New(slog.NewTextHandler(io.Discard, nil)), v)
-}
-
-// testServer builds a Server whose runner applies gated effects to the fake
-// store, so the real Gate runs but no Postgres is involved.
-func testServer(t *testing.T) (*Server, *fakeStore) {
+// testServer builds the todos handlers wired to the fake store through the real
+// pipeline (real gate, real guardrails), with no Postgres involved.
+func testServer(t *testing.T) (http.Handler, *fakeStore) {
 	t.Helper()
-	store := newFakeStore()
-	s := &Server{
-		store: store,
-		log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
-	s.run = func(_ context.Context, v shell.Vetted) error {
-		return applyToFake(store, v)
-	}
-	return s, store
+	fake := newFakeStore()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	pipe := kernel.NewPipeline(fake, log, store.Policies()...)
+	h := NewHandlers(fake, pipe, log)
+	mux := http.NewServeMux()
+	h.Register(mux)
+	return kernel.Middleware(log)(mux), fake
 }
 
-func do(t *testing.T, s *Server, method, target, body string) *httptest.ResponseRecorder {
+func do(t *testing.T, h http.Handler, method, target, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	var r *http.Request
 	if body == "" {
@@ -92,15 +89,14 @@ func do(t *testing.T, s *Server, method, target, body string) *httptest.Response
 		r = httptest.NewRequest(method, target, strings.NewReader(body))
 	}
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, r)
+	h.ServeHTTP(rec, r)
 	return rec
 }
 
 func TestCreateGetUpdateDelete(t *testing.T) {
-	s, _ := testServer(t)
+	h, _ := testServer(t)
 
-	// create
-	rec := do(t, s, http.MethodPost, "/todos", `{"title":"buy milk"}`)
+	rec := do(t, h, http.MethodPost, "/todos", `{"title":"buy milk"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create status = %d, body=%s", rec.Code, rec.Body)
 	}
@@ -110,14 +106,12 @@ func TestCreateGetUpdateDelete(t *testing.T) {
 		t.Fatalf("bad created todo: %#v", created)
 	}
 
-	// get
-	rec = do(t, s, http.MethodGet, "/todos/"+created.ID, "")
+	rec = do(t, h, http.MethodGet, "/todos/"+created.ID, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("get status = %d", rec.Code)
 	}
 
-	// update
-	rec = do(t, s, http.MethodPatch, "/todos/"+created.ID, `{"done":true}`)
+	rec = do(t, h, http.MethodPatch, "/todos/"+created.ID, `{"done":true}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("update status = %d, body=%s", rec.Code, rec.Body)
 	}
@@ -127,45 +121,44 @@ func TestCreateGetUpdateDelete(t *testing.T) {
 		t.Fatalf("update did not preserve/patch correctly: %#v", updated)
 	}
 
-	// delete
-	rec = do(t, s, http.MethodDelete, "/todos/"+created.ID, "")
+	rec = do(t, h, http.MethodDelete, "/todos/"+created.ID, "")
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("delete status = %d", rec.Code)
 	}
-	rec = do(t, s, http.MethodGet, "/todos/"+created.ID, "")
+	rec = do(t, h, http.MethodGet, "/todos/"+created.ID, "")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("get after delete = %d, want 404", rec.Code)
 	}
 }
 
 func TestCreateEmptyTitleIs422(t *testing.T) {
-	s, _ := testServer(t)
-	rec := do(t, s, http.MethodPost, "/todos", `{"title":"   "}`)
+	h, _ := testServer(t)
+	rec := do(t, h, http.MethodPost, "/todos", `{"title":"   "}`)
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("empty title status = %d, want 422", rec.Code)
 	}
 }
 
 func TestOversizeTitleIs422Guardrail(t *testing.T) {
-	s, _ := testServer(t)
+	h, _ := testServer(t)
 	big := `{"title":"` + strings.Repeat("x", 500) + `"}`
-	rec := do(t, s, http.MethodPost, "/todos", big)
+	rec := do(t, h, http.MethodPost, "/todos", big)
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("oversize title status = %d, want 422 from the gate", rec.Code)
 	}
 }
 
 func TestUnknownFieldIs400(t *testing.T) {
-	s, _ := testServer(t)
-	rec := do(t, s, http.MethodPost, "/todos", `{"titel":"typo"}`)
+	h, _ := testServer(t)
+	rec := do(t, h, http.MethodPost, "/todos", `{"titel":"typo"}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("unknown field status = %d, want 400", rec.Code)
 	}
 }
 
 func TestGetMissingIs404(t *testing.T) {
-	s, _ := testServer(t)
-	rec := do(t, s, http.MethodGet, "/todos/does-not-exist", "")
+	h, _ := testServer(t)
+	rec := do(t, h, http.MethodGet, "/todos/does-not-exist", "")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("missing get = %d, want 404", rec.Code)
 	}

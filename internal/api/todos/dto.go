@@ -1,4 +1,4 @@
-package api
+package todos
 
 import (
 	"time"
@@ -12,7 +12,7 @@ type createRequest struct {
 }
 
 // patchRequest is the PATCH /todos/{id} body. Pointers distinguish an omitted
-// field from a zero value, matching core.Patch semantics.
+// field from a zero value, matching the core Patch semantics.
 type patchRequest struct {
 	Title *string `json:"title"`
 	Done  *bool   `json:"done"`

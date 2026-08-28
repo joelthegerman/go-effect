@@ -1,19 +1,19 @@
-package shell
+package kernel
 
 import (
 	"crypto/rand"
 	"fmt"
 )
 
-// NewID mints a random UUIDv4 for a new todo. ID generation is stateful and
-// impure, so it belongs to the shell; the wiring passes the result into
-// core.Create, keeping that pure function free of hidden inputs.
+// NewID mints a random UUIDv4 for a new entity. ID generation is stateful and
+// impure, so it belongs to the framework; feature wiring passes the result into
+// a pure planning function, keeping that function free of hidden inputs.
 func NewID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		// crypto/rand failing is catastrophic and not something a request can
 		// meaningfully recover from.
-		panic("shell.NewID: " + err.Error())
+		panic("kernel.NewID: " + err.Error())
 	}
 	b[6] = (b[6] & 0x0f) | 0x40 // version 4
 	b[8] = (b[8] & 0x3f) | 0x80 // variant 10

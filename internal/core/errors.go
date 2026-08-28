@@ -7,7 +7,7 @@ import "fmt"
 // kind of check the logic wants for its OWN correctness, so it lives in core.
 //
 // The API layer maps this to HTTP 422. Guardrails imposed ON the code (not by
-// it) live in the shell's gate instead — see internal/shell/gate.go.
+// it) live in a feature's shell policy instead — see internal/shell/todos/policy.go.
 type ValidationError struct {
 	Field string
 	Msg   string
@@ -20,5 +20,6 @@ func (e ValidationError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Field, e.Msg)
 }
 
-// invalid is a small constructor to keep the logic below readable.
-func invalid(field, msg string) error { return ValidationError{Field: field, Msg: msg} }
+// Invalid is a small constructor for a ValidationError, exported so feature
+// logic packages (core/todos, …) can build one without redeclaring the type.
+func Invalid(field, msg string) error { return ValidationError{Field: field, Msg: msg} }

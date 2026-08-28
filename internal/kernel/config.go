@@ -1,13 +1,13 @@
-// Package config loads runtime configuration from the environment with
-// sensible, dev-friendly defaults so `make run` works against the sandbox
-// docker-compose Postgres out of the box.
-package config
+package kernel
 
 import (
 	"os"
 	"time"
 )
 
+// Config is the runtime configuration, loaded from the environment with
+// sensible, dev-friendly defaults so `make run` works against the sandbox
+// docker-compose Postgres out of the box.
 type Config struct {
 	Addr            string
 	DatabaseURL     string

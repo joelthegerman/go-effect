@@ -24,7 +24,7 @@ Persistence lives entirely in `internal/shell`, behind a repository, and reaches
 the database only through the existing gate.
 
 **Writes stay effects-as-data.** `core` returns `StoreTodo` / `DeleteTodo`
-effects (plain data). Only `shell.Run` executes them, and `Run` requires a
+effects (plain data). Only `kernel.Run` executes them, and `Run` requires a
 `Vetted` — so every write still passes the gate. `Run` drives a small
 `TodoWriter` interface (`Upsert` / `Delete`), which the Postgres `Repo`
 implements and tests fake.
@@ -35,11 +35,11 @@ the repo and passes it to `core.Update`, which decides against it (exists?
 preserve `Done`?) without doing any I/O. `core` stays deterministic: same input,
 same output.
 
-**Impure inputs are injected, not reached for.** IDs come from `shell.NewID`
+**Impure inputs are injected, not reached for.** IDs come from `kernel.NewID`
 (a UUIDv4); timestamps are assigned by the database. `core` never calls the
 clock or a random source.
 
-**Schema is owned by the app.** Migrations in `internal/shell/migrations` are
+**Schema is owned by the app.** Migrations in `internal/shell/todos/migrations` are
 embedded and applied on startup, tracked in `schema_migrations`. This is separate
 from `db/init.sql`, which remains a throwaway pgAdmin demo (the `users` table),
 not the app's schema.

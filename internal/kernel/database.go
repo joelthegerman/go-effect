@@ -1,22 +1,48 @@
-package shell
+package kernel
 
 import (
 	"context"
-	"embed"
 	"fmt"
 	"io/fs"
 	"sort"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-//go:embed migrations/*.sql
-var migrationFS embed.FS
+// Connect opens a pooled connection to Postgres and verifies it with a ping.
+// Pool sizing and timeouts are set here (the framework owns infrastructure
+// config); callers pass a DSN like postgres://user:pass@host:5432/db.
+func Connect(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse database url: %w", err)
+	}
+	cfg.MaxConns = 10
+	cfg.MinConns = 1
+	cfg.MaxConnLifetime = time.Hour
+	cfg.MaxConnIdleTime = 30 * time.Minute
+	cfg.HealthCheckPeriod = time.Minute
 
-// Migrate applies every embedded migration that has not run yet, in filename
-// order, each in its own transaction, and records it in schema_migrations. It
-// is idempotent: running it repeatedly is a no-op once everything is applied.
-func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("connect: %w", err)
+	}
+
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := pool.Ping(pingCtx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("ping: %w", err)
+	}
+	return pool, nil
+}
+
+// Migrate applies every *.sql file in migrations (at its root) that has not run
+// yet, in filename order, each in its own transaction, recording it in
+// schema_migrations. It is idempotent. Each feature owns its own migrations and
+// hands them in as an fs.FS, so the framework never embeds feature SQL itself.
+func Migrate(ctx context.Context, pool *pgxpool.Pool, migrations fs.FS) error {
 	if _, err := pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version    TEXT PRIMARY KEY,
@@ -30,7 +56,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 
-	names, err := migrationNames()
+	names, err := migrationNames(migrations)
 	if err != nil {
 		return err
 	}
@@ -39,7 +65,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		if applied[name] {
 			continue
 		}
-		body, err := migrationFS.ReadFile("migrations/" + name)
+		body, err := fs.ReadFile(migrations, name)
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", name, err)
 		}
@@ -55,7 +81,7 @@ func applyOne(ctx context.Context, pool *pgxpool.Pool, name, body string) error 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx) //nolint:errcheck // no-op after a successful commit
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after a successful commit
 
 	if _, err := tx.Exec(ctx, body); err != nil {
 		return err
@@ -84,8 +110,8 @@ func appliedVersions(ctx context.Context, pool *pgxpool.Pool) (map[string]bool, 
 	return out, rows.Err()
 }
 
-func migrationNames() ([]string, error) {
-	entries, err := fs.ReadDir(migrationFS, "migrations")
+func migrationNames(migrations fs.FS) ([]string, error) {
+	entries, err := fs.ReadDir(migrations, ".")
 	if err != nil {
 		return nil, err
 	}
